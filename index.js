@@ -312,9 +312,13 @@ function handleStopRewrite() {
 //     setTimeout(processSelection, 50);
 // }
 
+let selectionChangeTimer = null;
 function handleSelectionChange() {
-    // Use a small timeout to ensure the selection has been updated
-    setTimeout(processSelection, 50);
+    // FIXED: previously called setTimeout(processSelection, 50) on every selectionchange event
+    // with no debounce. Selecting large text fires dozens of events simultaneously, stacking
+    // up that many processSelection calls. Debounce so only the final settled state is processed.
+    if (selectionChangeTimer) clearTimeout(selectionChangeTimer);
+    selectionChangeTimer = setTimeout(processSelection, 100);
 }
 
 function processSelection() {
@@ -494,6 +498,9 @@ function positionMenu() {
     if (!rewriteMenu) return;
 
     let selection = window.getSelection();
+    // FIXED: getRangeAt(0) throws if rangeCount is 0 (e.g. scroll fires after selection cleared)
+    if (!selection || selection.rangeCount === 0) return;
+
     let range = selection.getRangeAt(0);
     let rect = range.getBoundingClientRect();
 
@@ -557,11 +564,12 @@ function removeUndoButton(editedMesId) {
 }
 
 async function removeHighlight(mesDiv, mesId, swipeId) {
-    const highlightSpan = mesDiv.querySelector('.animated-highlight');
-    if (highlightSpan) {
-        const textNode = document.createTextNode(highlightSpan.textContent);
-        highlightSpan.parentNode.replaceChild(textNode, highlightSpan);
-    }
+    // FIXED: previously only replaced the first .animated-highlight span found.
+    // Rapid rewrites could leave multiple orphan spans; now we clear all of them.
+    mesDiv.querySelectorAll('.animated-highlight').forEach(span => {
+        const textNode = document.createTextNode(span.textContent);
+        span.parentNode.replaceChild(textNode, span);
+    });
 
     const context = getContext();
     const messageData = context.chat[mesId];
@@ -687,10 +695,18 @@ function getTextOffset(parent, node) {
     );
 
     let offset = 0;
-    while (treeWalker.nextNode() !== node) {
-        offset += treeWalker.currentNode.length;
+    let currentNode;
+    // FIXED: previous loop `while (nextNode() !== node)` caused an infinite loop when
+    // the target node was not found — nextNode() returns null indefinitely once exhausted,
+    // but `null !== node` kept the loop alive. Now we break safely on null.
+    while ((currentNode = treeWalker.nextNode()) !== null) {
+        if (currentNode === node) {
+            return offset;
+        }
+        offset += currentNode.length;
     }
 
+    // Node not found in tree (e.g. edge-of-element selection) — return best-effort offset
     return offset;
 }
 
@@ -1085,41 +1101,57 @@ async function handleSimplifiedChatCompletionRewrite(mesId, swipeId, option, cus
     // Show the stop button
     getContext().deactivateSendButtons();
 
-    const res = await sendOpenAIRequest('normal', simplifiedChat, abortController.signal);
-    window.getSelection().removeAllRanges();
-
-    let newText = '';
-
-    if (typeof res === 'function') {
-        // Streaming case
-        const streamingSpan = document.createElement('span');
-        streamingSpan.className = 'animated-highlight';
-
-        // Replace the selected text with the streaming span
-        range.deleteContents();
-        range.insertNode(streamingSpan);
-
-        for await (const chunk of res()) {
-            newText = chunk.text;
-            streamingSpan.textContent = newText;
-        }
-    } else {
-        // Non-streaming case
-        newText = res?.choices?.[0]?.message?.content ?? '';
-        const highlightedNewText = document.createElement('span');
-        highlightedNewText.className = 'animated-highlight';
-        highlightedNewText.textContent = newText;
-
-        range.deleteContents();
-        range.insertNode(highlightedNewText);
+    let res;
+    try {
+        res = await sendOpenAIRequest('normal', simplifiedChat, abortController.signal);
+        window.getSelection().removeAllRanges();
+    } catch (error) {
+        console.error('[Rewrite Extension] Error during simplified sendOpenAIRequest:', error);
+        toastr.error("Rewrite failed. Check browser console (F12) for details.", "Rewrite Error");
+        getContext().activateSendButtons();
+        return;
     }
 
-    // Remove highlight after x seconds when streaming is complete
-    const highlightDuration = extension_settings[extensionName].highlightDuration;
-    setTimeout(() => removeHighlight(mesDiv, mesId, swipeId), highlightDuration);
+    // FIXED: previously had no try/catch/finally — if sendOpenAIRequest or streaming failed,
+    // activateSendButtons was never called, leaving the UI permanently locked.
+    let newText = '';
+    try {
+        if (typeof res === 'function') {
+            // Streaming case
+            const streamingSpan = document.createElement('span');
+            streamingSpan.className = 'animated-highlight';
 
-    await saveRewrittenText(mesId, swipeId, fullMessage, rawStartOffset, rawEndOffset, newText);
-    getContext().activateSendButtons();
+            // Replace the selected text with the streaming span
+            range.deleteContents();
+            range.insertNode(streamingSpan);
+
+            for await (const chunk of res()) {
+                newText = chunk.text;
+                streamingSpan.textContent = newText;
+            }
+        } else {
+            // Non-streaming case
+            newText = res?.choices?.[0]?.message?.content ?? '';
+            const highlightedNewText = document.createElement('span');
+            highlightedNewText.className = 'animated-highlight';
+            highlightedNewText.textContent = newText;
+
+            range.deleteContents();
+            range.insertNode(highlightedNewText);
+        }
+
+        // Remove highlight after x seconds when streaming is complete
+        const highlightDuration = extension_settings[extensionName].highlightDuration;
+        setTimeout(() => removeHighlight(mesDiv, mesId, swipeId), highlightDuration);
+
+        await saveRewrittenText(mesId, swipeId, fullMessage, rawStartOffset, rawEndOffset, newText);
+    } catch (error) {
+        console.error('[Rewrite Extension] Error processing simplified API response:', error);
+        toastr.error("Failed to process rewrite response. Check console.", "Processing Error");
+        removeHighlight(mesDiv, mesId, swipeId);
+    } finally {
+        getContext().activateSendButtons();
+    }
 }
 
 // Updated signature to accept selectionInfo
@@ -1348,6 +1380,11 @@ function calculateTargetTokenCount(selectedText, option) {
                 case 'Expand':
                     modifier = extension_settings[extensionName].expandTokensAdd;
                     break;
+                case 'Custom': // FIXED: was missing — returned NaN silently
+                    modifier = extension_settings[extensionName].customTokensAdd;
+                    break;
+                default:
+                    modifier = 0;
             }
             result = baseTokenCount + modifier;
         } else { // multiplicative
@@ -1362,6 +1399,11 @@ function calculateTargetTokenCount(selectedText, option) {
                 case 'Expand':
                     multiplier = extension_settings[extensionName].expandTokensMult;
                     break;
+                case 'Custom': // FIXED: was missing — returned NaN silently
+                    multiplier = extension_settings[extensionName].customTokensMult;
+                    break;
+                default:
+                    multiplier = 1.0;
             }
             result = baseTokenCount * multiplier;
         }
@@ -1376,6 +1418,11 @@ function calculateTargetTokenCount(selectedText, option) {
             case 'Expand':
                 result = extension_settings[extensionName].expandTokens;
                 break;
+            case 'Custom': // FIXED: was missing — returned NaN silently
+                result = extension_settings[extensionName].customTokens;
+                break;
+            default:
+                result = 100;
         }
     }
 
