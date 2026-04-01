@@ -1,11 +1,10 @@
-# Rewrite Extension for SillyTavern
-
-> [!IMPORTANT]
-> **2025.09.02** - This is extension is no longer maintained for the foreseeable future.
+# Rewrite Extension for SillyTavern - Forked from splitclover
 
 ## Overview
 
 The Rewrite Extension enhances the chat experience in SillyTavern by allowing users to dynamically rewrite, shorten, or expand selected text within messages. Works for chat completion, text completion and NovelAI.
+
+Since this is a fork for my personal use and Javascript is something I am not great at, I am fine with the use of AI here but if you find this repo and hate AI then feel free to fork it to remove the AI slop or just directly fork from splitclover's work.
 
 ## Features
 
@@ -21,7 +20,7 @@ The Rewrite Extension enhances the chat experience in SillyTavern by allowing us
 ## Installation
 
 Use SillyTavern's built-in extension installer:
-`https://github.com/splitclover/rewrite-extension`
+`https://github.com/dogoo9/rewrite-extension`
 
 ## Usage
 
@@ -42,3 +41,5 @@ To use the Rewrite Extension:
 ## Contributing
 
 Contributions to improve the Rewrite Extension are welcome. Please fork the repository and submit a pull request with your changes.
+Thanks to splitclover https://github.com/splitclover/rewrite-extension for making the tool!
+Claude Sonnet 4.6 for helping identify the loop bug where it freezes the page apon using "delete" function in the GUI for large chunks of text.
