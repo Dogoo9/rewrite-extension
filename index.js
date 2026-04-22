@@ -283,8 +283,10 @@ function initRewriteMenu() {
     document.addEventListener('mousedown', hideMenuOnOutsideClick);
     document.addEventListener('touchstart', hideMenuOnOutsideClick);
 
-    let chatContainer = document.getElementById('chat');
-    chatContainer.addEventListener('scroll', positionMenu);
+    const chatContainer = document.getElementById('chat');
+    if (chatContainer) {
+        chatContainer.addEventListener('scroll', positionMenu);
+    }
 
     $('#mes_stop').on('click', handleStopRewrite);
 }
@@ -478,6 +480,7 @@ function createRewriteMenu() {
         { name: 'Custom', show: extension_settings[extensionName].showCustom }, 
         { name: 'Delete', show: extension_settings[extensionName].showDelete }
     ];
+    let visibleOptionCount = 0;
     options.forEach(option => {
         if (option.show) {
             let li = document.createElement('li');
@@ -487,8 +490,14 @@ function createRewriteMenu() {
             li.addEventListener('touchstart', handleMenuItemClick);
             li.dataset.option = option.name;
             rewriteMenu.appendChild(li);
+            visibleOptionCount++;
         }
     });
+
+    if (visibleOptionCount === 0) {
+        rewriteMenu = null;
+        return;
+    }
 
     document.body.appendChild(rewriteMenu);
     positionMenu();
@@ -1163,8 +1172,7 @@ async function handleTextBasedRewrite(mesId, swipeId, option, customInstructions
         console.error("[Rewrite Extension] Could not find mesDiv in handleTextBasedRewrite.");
         return;
     }
-    // Get the selected model and option-specific prompt
-    const selectedModel = extension_settings[extensionName].selectedModel;
+    // Get option-specific prompt
     let promptTemplate;
     switch (option) {
         case 'Rewrite':
@@ -1274,91 +1282,69 @@ async function handleTextBasedRewrite(mesId, swipeId, option, customInstructions
 
     // Show the stop button
     getContext().deactivateSendButtons();
-    let res;
-    if (extension_settings[extensionName].useStreaming) {
-        switch (main_api) {
-            case 'textgenerationwebui':
-                res = await generateTextGenWithStreaming(generateData, abortController.signal);
-                break;
-            case 'novel':
-                res = await generateNovelWithStreaming(generateData, abortController.signal);
-                break;
-            case 'koboldhorde':
-                toastr.warning('Rewrite streaming not supported for Kobold. Turn off in rewrite settings.');
-            default:
-                throw new Error('Streaming is enabled, but the current API does not support streaming.');
-        }
-    } else {
-        if (main_api === 'koboldhorde') {
+    try {
+        let res;
+        if (extension_settings[extensionName].useStreaming) {
+            switch (main_api) {
+                case 'textgenerationwebui':
+                    res = await generateTextGenWithStreaming(generateData, abortController.signal);
+                    break;
+                case 'novel':
+                    res = await generateNovelWithStreaming(generateData, abortController.signal);
+                    break;
+                case 'koboldhorde':
+                    toastr.warning('Rewrite streaming not supported for Kobold. Turn off in rewrite settings.');
+                default:
+                    throw new Error('Streaming is enabled, but the current API does not support streaming.');
+            }
+        } else if (main_api === 'koboldhorde') {
             res = await generateHorde(prompt, generateData, abortController.signal, true);
         } else {
             const response = await generateRaw(prompt, null, false, false, null, generateData.max_length);
-            res = {text: response};
-            // Shamelessly copied from script.js
-            /*function getGenerateUrl(api) {
-                switch (api) {
-                    case 'textgenerationwebui':
-                        return '/api/backends/text-completions/generate';
-                    case 'novel':
-                        return '/api/novelai/generate';
-                    default:
-                        throw new Error(`Unknown API: ${api}`);
-                }
-            }
-
-            const response = await fetch(getGenerateUrl(main_api), {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                cache: 'no-cache',
-                body: JSON.stringify(generateData),
-                signal: abortController.signal,
-            });
-
-            if (!response.ok) {
-                const error = await response.json();
-                throw error;
-            }
-
-            res = await response.json();*/
+            res = { text: response };
         }
-    }
 
-    window.getSelection().removeAllRanges();
+        window.getSelection().removeAllRanges();
 
-    let newText = '';
+        let newText = '';
 
-    if (typeof res === 'function') {
-        // Streaming case
+        if (typeof res === 'function') {
+            // Streaming case
+            const streamingSpan = document.createElement('span');
+            streamingSpan.className = 'animated-highlight';
 
-        const streamingSpan = document.createElement('span');
-        streamingSpan.className = 'animated-highlight';
+            // Replace the selected text with the streaming span
+            range.deleteContents();
+            range.insertNode(streamingSpan);
 
-        // Replace the selected text with the streaming span
-        range.deleteContents();
-        range.insertNode(streamingSpan);
+            for await (const chunk of res()) {
+                newText = chunk.text;
+                streamingSpan.textContent = newText;
+            }
+        } else {
+            // Non-streaming case
+            newText = res?.choices?.[0]?.message?.content ?? res?.choices?.[0]?.text ?? res?.text ?? '';
+            if (main_api === 'novel') newText = res.output;
+            const highlightedNewText = document.createElement('span');
+            highlightedNewText.className = 'animated-highlight';
+            highlightedNewText.textContent = newText;
 
-        for await (const chunk of res()) {
-            newText = chunk.text;
-            streamingSpan.textContent = newText;
+            range.deleteContents();
+            range.insertNode(highlightedNewText);
         }
-    } else {
-        // Non-streaming case
-        newText = res?.choices?.[0]?.message?.content ?? res?.choices?.[0]?.text ?? res?.text ?? '';
-        if (main_api === 'novel') newText = res.output;
-        const highlightedNewText = document.createElement('span');
-        highlightedNewText.className = 'animated-highlight';
-        highlightedNewText.textContent = newText;
 
-        range.deleteContents();
-        range.insertNode(highlightedNewText);
+        // Remove highlight after x seconds when streaming is complete
+        const highlightDuration = extension_settings[extensionName].highlightDuration;
+        setTimeout(() => removeHighlight(mesDiv, mesId, swipeId), highlightDuration);
+
+        await saveRewrittenText(mesId, swipeId, fullMessage, rawStartOffset, rawEndOffset, newText);
+    } catch (error) {
+        console.error('[Rewrite Extension] Text-based rewrite failed:', error);
+        toastr.error("Rewrite failed. Check browser console (F12) for details.", "Rewrite Error");
+        removeHighlight(mesDiv, mesId, swipeId);
+    } finally {
+        getContext().activateSendButtons();
     }
-
-    // Remove highlight after x seconds when streaming is complete
-    const highlightDuration = extension_settings[extensionName].highlightDuration;
-    setTimeout(() => removeHighlight(mesDiv, mesId, swipeId), highlightDuration);
-
-    await saveRewrittenText(mesId, swipeId, fullMessage, rawStartOffset, rawEndOffset, newText);
-    getContext().activateSendButtons();
 }
 
 function calculateTargetTokenCount(selectedText, option) {
