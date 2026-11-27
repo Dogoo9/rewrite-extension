@@ -305,6 +305,7 @@ function handleStopRewrite() {
 
         // Call removeHighlight with the stored arguments
         setTimeout(() => removeHighlight(mesDiv, mesId, swipeId), highlightDuration);
+        abortController = null;
     }
 }
 
@@ -566,7 +567,7 @@ function addUndoButton(mesId) {
 
 function removeUndoButton(editedMesId) {
     // Remove all changes for this message from the changeHistory
-    changeHistory = changeHistory.filter(change => change.mesId !== editedMesId);
+    changeHistory = changeHistory.filter(change => String(change.mesId) !== String(editedMesId));
 
     // Update undo buttons for other messages
     updateUndoButtons();
@@ -949,15 +950,15 @@ async function handleChatCompletionRewrite(mesId, swipeId, option, customInstruc
         if (Array.isArray(message.content)) {
             message.content = message.content.map(item => {
                 if (item.type === 'text') {
-                    item.text = item.text.replace(/{{rewrite}}/gi, selectedRawText);
-                    item.text = item.text.replace(/{{targetmessage}}/gi, fullMessage);
+                    item.text = item.text.replace(/{{rewrite}}/gi, () => selectedRawText);
+                    item.text = item.text.replace(/{{targetmessage}}/gi, () => fullMessage);
                     item.text = item.text.replace(/{{rewritecount}}/gi, wordCount);
                 }
                 return item;
             });
         } else if (typeof message.content === 'string') {
-            message.content = message.content.replace(/{{rewrite}}/gi, selectedRawText);
-            message.content = message.content.replace(/{{targetmessage}}/gi, fullMessage);
+            message.content = message.content.replace(/{{rewrite}}/gi, () => selectedRawText);
+            message.content = message.content.replace(/{{targetmessage}}/gi, () => fullMessage);
             message.content = message.content.replace(/{{rewritecount}}/gi, wordCount);
         }
         return message;
@@ -989,7 +990,10 @@ async function handleChatCompletionRewrite(mesId, swipeId, option, customInstruc
         window.getSelection().removeAllRanges();
         // Restore the original settings (moved to finally)
         Object.assign(oai_settings, prev_oai_settings);
-        getContext().activateSendButtons();
+        if (res === undefined) {
+            abortController = null;
+            getContext().activateSendButtons();
+        }
     }
 
     // If the request failed, res will be undefined, stop further processing
@@ -1036,8 +1040,10 @@ async function handleChatCompletionRewrite(mesId, swipeId, option, customInstruc
         toastr.error("Failed to process rewrite response. Check console.", "Processing Error");
         // Ensure highlight is removed if processing fails
         removeHighlight(mesDiv, mesId, swipeId);
+    } finally {
+        abortController = null;
+        getContext().activateSendButtons();
     }
-    // activateSendButtons is now handled in the finally block above
 }
 
 // Updated signature to accept selectionInfo
@@ -1076,14 +1082,14 @@ async function handleSimplifiedChatCompletionRewrite(mesId, swipeId, option, cus
     let prompt = getContext().substituteParams(promptTemplate);
 
     prompt = prompt
-        .replace(/{{rewrite}}/gi, selectedRawText)
-        .replace(/{{targetmessage}}/gi, fullMessage)
+        .replace(/{{rewrite}}/gi, () => selectedRawText)
+        .replace(/{{targetmessage}}/gi, () => fullMessage)
         .replace(/{{rewritecount}}/gi, wordCount);
 
     // Inject custom instructions if applicable
     if (option === 'Custom') {
-        if (prompt.includes('{{custom_instructions}}')) {
-            prompt = prompt.replace(/{{custom_instructions}}/gi, customInstructions);
+        if (/{{custom_instructions}}/i.test(prompt)) {
+            prompt = prompt.replace(/{{custom_instructions}}/gi, () => customInstructions);
         } else {
             // Append if macro is missing (basic fallback)
             prompt += `\n\nInstructions: ${customInstructions}`;
@@ -1117,6 +1123,7 @@ async function handleSimplifiedChatCompletionRewrite(mesId, swipeId, option, cus
     } catch (error) {
         console.error('[Rewrite Extension] Error during simplified sendOpenAIRequest:', error);
         toastr.error("Rewrite failed. Check browser console (F12) for details.", "Rewrite Error");
+        abortController = null;
         getContext().activateSendButtons();
         return;
     }
@@ -1159,6 +1166,7 @@ async function handleSimplifiedChatCompletionRewrite(mesId, swipeId, option, cus
         toastr.error("Failed to process rewrite response. Check console.", "Processing Error");
         removeHighlight(mesDiv, mesId, swipeId);
     } finally {
+        abortController = null;
         getContext().activateSendButtons();
     }
 }
@@ -1199,14 +1207,14 @@ async function handleTextBasedRewrite(mesId, swipeId, option, customInstructions
     let prompt = getContext().substituteParams(promptTemplate);
 
     prompt = prompt
-        .replace(/{{rewrite}}/gi, selectedRawText)
-        .replace(/{{targetmessage}}/gi, fullMessage)
+        .replace(/{{rewrite}}/gi, () => selectedRawText)
+        .replace(/{{targetmessage}}/gi, () => fullMessage)
         .replace(/{{rewritecount}}/gi, wordCount);
 
     // Inject custom instructions if applicable
     if (option === 'Custom') {
-        if (prompt.includes('{{custom_instructions}}')) {
-            prompt = prompt.replace(/{{custom_instructions}}/gi, customInstructions);
+        if (/{{custom_instructions}}/i.test(prompt)) {
+            prompt = prompt.replace(/{{custom_instructions}}/gi, () => customInstructions);
         } else {
             // Append if macro is missing (basic fallback)
             prompt += `\n\nInstructions: ${customInstructions}`;
@@ -1324,7 +1332,6 @@ async function handleTextBasedRewrite(mesId, swipeId, option, customInstructions
         } else {
             // Non-streaming case
             newText = res?.choices?.[0]?.message?.content ?? res?.choices?.[0]?.text ?? res?.text ?? '';
-            if (main_api === 'novel') newText = res.output;
             const highlightedNewText = document.createElement('span');
             highlightedNewText.className = 'animated-highlight';
             highlightedNewText.textContent = newText;
@@ -1343,6 +1350,7 @@ async function handleTextBasedRewrite(mesId, swipeId, option, customInstructions
         toastr.error("Rewrite failed. Check browser console (F12) for details.", "Rewrite Error");
         removeHighlight(mesDiv, mesId, swipeId);
     } finally {
+        abortController = null;
         getContext().activateSendButtons();
     }
 }
